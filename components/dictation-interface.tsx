@@ -242,12 +242,6 @@ export function DictationInterface() {
                 Paused
               </Badge>
             )}
-            {isTranscribing && !isAutoSaving && (
-              <Badge variant="default" className="animate-pulse">
-                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                Transcribing
-              </Badge>
-            )}
             {isAutoSaving && (
               <Badge variant="default" className="animate-pulse">
                 <Loader2 className="h-3 w-3 mr-1 animate-spin" />

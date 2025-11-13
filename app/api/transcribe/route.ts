@@ -10,6 +10,32 @@ const MODEL_CANDIDATES = [PRIMARY_GEMINI_MODEL, ...DEFAULT_FALLBACKS];
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 800;
 
+// Dictionary cache to avoid repeated DB queries during a recording session
+interface DictionaryCacheEntry {
+  words: Dictionary[];
+  timestamp: number;
+}
+
+const dictionaryCache = new Map<string, DictionaryCacheEntry>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes - enough for a recording session
+
+// Clean up expired cache entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, entry] of dictionaryCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL_MS) {
+      dictionaryCache.delete(userId);
+      console.log(`🗑️ Cleared expired dictionary cache for user ${userId}`);
+    }
+  }
+}, 60 * 1000); // Check every minute
+
+// Helper function to invalidate cache when dictionary is updated
+export function invalidateDictionaryCache(userId: string) {
+  dictionaryCache.delete(userId);
+  console.log(`🔄 Invalidated dictionary cache for user ${userId}`);
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
@@ -27,39 +53,58 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No audio file provided' }, { status: 400 });
     }
 
-    // 🧠 Fetch custom vocabulary for better accuracy
-    const dictionaryRepo = await getRepository(Dictionary);
-    const dictionaryWords = await dictionaryRepo.find({ where: { userId } });
+    // 🧠 Fetch custom vocabulary for better accuracy (with caching)
+    let dictionaryWords: Dictionary[];
+    const cachedEntry = dictionaryCache.get(userId);
+    const now = Date.now();
 
-    // 🧩 Construct enhanced prompt
-    const basePrompt = `
-You are an advanced AI transcription engine used in a professional voice keyboard app.
-Your task is to accurately convert spoken voice into clear, natural, well-punctuated text.
-
-Follow these rules:
-1. Transcribe exactly what is said.
-2. Fix grammar and punctuation naturally.
-3. Preserve the intent and tone.
-4. Never hallucinate or invent new text.
-5. Avoid filler words ("uh", "um") unless intentional.
-6. Do not include timestamps or meta output.
-7. Return only the transcribed text.
-
-${dictionaryWords.length > 0 ? `
-USER DICTIONARY (preferred spellings):
+    if (cachedEntry && (now - cachedEntry.timestamp) < CACHE_TTL_MS) {
+      // Use cached dictionary
+      dictionaryWords = cachedEntry.words;
+      console.log(`✅ Using cached dictionary for user ${userId} (${dictionaryWords.length} words)`);
+    } else {
+      // Fetch from database and cache it
+      const dictionaryRepo = await getRepository(Dictionary);
+      const fetchedWords = await dictionaryRepo.find({ where: { userId } }) as Dictionary[];
+      dictionaryWords = fetchedWords;
+      dictionaryCache.set(userId, { words: dictionaryWords, timestamp: now });
+      console.log(`📚 Fetched and cached dictionary for user ${userId} (${dictionaryWords.length} words)`);
+    }
+    const dictionaryBlock = dictionaryWords.length
+      ? `REFERENCE_DICTIONARY (for recognition and spelling support only):
 ${dictionaryWords
-          .slice(0, 50)
-          .map((entry) => `- "${entry.word}"${entry.context ? ` (${entry.context})` : ''}`)
-          .join('\n')}
-` : ''}
+        .slice(0, 100)
+        .map((w) => `- ${w.word}${w.context ? ` — ${w.context}` : ''}`)
+        .join('\n')}
+Use these terms only if the speaker clearly says them or something that phonetically matches them.
+Do NOT add, infer, or force them if they were not spoken.
+`
+      : '';
 
-${previousContext ? `
-PREVIOUS CONTEXT (for name/term consistency only):
-"${previousContext}"
-` : ''}
+    const basePrompt = `
+You are a professional AI transcription system powering a real-time voice keyboard app.
+You receive audio in small slices. Each slice must be transcribed independently but flow naturally with the previous text.
 
-Now transcribe the following audio accurately.
+Follow these exact rules:
+
+1. **Transcribe only what was spoken in this slice.**
+   - Do NOT repeat or rewrite any part of the previous transcript.
+   - Do NOT summarize or guess what comes next.
+2. **Continuity:** Read the previous context to understand where this slice begins,
+   then continue naturally without duplication or abrupt phrasing.
+3. **Formatting:** Apply correct grammar, punctuation, and capitalization naturally.
+4. **Accuracy:** Do not invent words or phrases that were not actually spoken.
+5. **Clarity:** Remove filler sounds (“uh”, “um”), false starts, or stutters unless intentional.
+6. **Dictionary:** Use reference dictionary spellings *only if* the spoken term matches phonetically.
+7. **Output:** Return ONLY the clean text corresponding to this slice — no timestamps, notes, or repetition.
+
+${previousContext ? `PREVIOUS CONTEXT (already finalized, do not repeat):\n"${previousContext}"\n` : ''}
+
+${dictionaryBlock}
+
+Now transcribe the newly provided audio slice accurately and naturally:
 `.trim();
+
 
     // Convert audio to base64
     const arrayBuffer = await audioFile.arrayBuffer();
@@ -93,7 +138,6 @@ Now transcribe the following audio accurately.
                 data: base64Audio,
               },
             },
-            { text: 'Please transcribe the above audio clip into natural written text.' },
           ];
 
           console.log(`🎙️ Attempting transcription with ${modelId}, attempt ${attempt}...`);
@@ -126,6 +170,14 @@ Now transcribe the following audio accurately.
             .replace(/\b\d{2}:\d{2}\b/g, '') // remove timestamps
             .replace(/\s+/g, ' ')
             .replace(/^(Output|Transcription|Result)[:\-]?\s*/i, '')
+            // Remove common AI hallucinations
+            .replace(/Please transcribe the above audio clip into natural written text\.?/gi, '')
+            .replace(/I'?m not sure what you'?re asking me to transcribe\.?/gi, '')
+            .replace(/Please provide the audio or text you would like me to process\.?/gi, '')
+            .replace(/I cannot transcribe\.?/gi, '')
+            .replace(/I don'?t have access to audio\.?/gi, '')
+            .replace(/Please provide audio\.?/gi, '')
+            .replace(/\s+/g, ' ') // clean up extra spaces after removal
             .trim();
 
           console.log(`✅ Transcription success (model=${modelId}, attempt=${attempt})`);

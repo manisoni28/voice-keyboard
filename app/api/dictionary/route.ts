@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { getRepository } from '@/lib/data-source';
 import { Dictionary } from '@/entities/Dictionary';
+import { invalidateDictionaryCache } from '@/app/api/transcribe/route';
 
 // GET - Fetch all dictionary entries for the authenticated user
 export async function GET(request: NextRequest) {
@@ -81,6 +82,9 @@ export async function POST(request: NextRequest) {
 
     await dictionaryRepo.save(newEntry);
 
+    // Invalidate cache so next transcription uses updated dictionary
+    invalidateDictionaryCache(userId);
+
     return NextResponse.json({
       success: true,
       entry: newEntry,
@@ -156,6 +160,9 @@ export async function PUT(request: NextRequest) {
 
     await dictionaryRepo.save(entry);
 
+    // Invalidate cache so next transcription uses updated dictionary
+    invalidateDictionaryCache(userId);
+
     return NextResponse.json({
       success: true,
       entry,
@@ -207,6 +214,9 @@ export async function DELETE(request: NextRequest) {
     }
 
     await dictionaryRepo.remove(entry);
+
+    // Invalidate cache so next transcription uses updated dictionary
+    invalidateDictionaryCache(userId);
 
     return NextResponse.json({
       success: true,
