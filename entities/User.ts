@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, OneToMany } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
 
 @Entity('users')
 export class User {
@@ -13,12 +13,6 @@ export class User {
 
   @Column()
   password!: string;
-
-  @OneToMany('Transcription', 'user')
-  transcriptions!: any[];
-
-  @OneToMany('Dictionary', 'user')
-  dictionary!: any[];
 
   @CreateDateColumn()
   createdAt!: Date;

@@ -11,7 +11,7 @@ export class Transcription {
   @Column('uuid')
   userId!: string;
 
-  @ManyToOne(() => User, (user) => user.transcriptions, { onDelete: 'CASCADE' })
+  @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'userId' })
   user!: User;
 
