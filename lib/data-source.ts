@@ -11,8 +11,13 @@ export const AppDataSource = new DataSource({
   synchronize: process.env.NODE_ENV === 'development', // Auto-sync in dev only
   logging: process.env.NODE_ENV === 'development',
   entities: [User, Transcription, Dictionary],
-  migrations: ['migrations/**/*.ts'],
+  migrations: [__dirname + '/../migrations/**/*{.ts,.js}'],
   subscribers: [],
+  // Add connection pool settings for production stability
+  extra: {
+    max: 10, // Maximum pool size
+    connectionTimeoutMillis: 10000,
+  },
 });
 
 // Initialize connection singleton for Next.js

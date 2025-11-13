@@ -1,4 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, CreateDateColumn, UpdateDateColumn, JoinColumn, Index } from 'typeorm';
+import { User } from './User';
 
 @Entity('transcriptions')
 @Index('IDX_transcriptions_user', ['userId'])
@@ -10,9 +11,9 @@ export class Transcription {
   @Column('uuid')
   userId!: string;
 
-  @ManyToOne('User', 'transcriptions', { onDelete: 'CASCADE' })
+  @ManyToOne(() => User, (user) => user.transcriptions, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'userId' })
-  user!: any;
+  user!: User;
 
   @Column('text')
   text!: string;

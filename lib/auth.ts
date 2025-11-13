@@ -13,6 +13,7 @@ declare module "next-auth" {
 }
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  trustHost: true, // Allow Railway and other deployment platforms
   providers: [
     Credentials({
       name: "credentials",
