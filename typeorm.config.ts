@@ -1,9 +1,21 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
-import * as dotenv from 'dotenv';
+import { config } from 'dotenv';
+import * as path from 'path';
 
 // Load environment variables from .env.local for local development
-dotenv.config({ path: '.env.local' });
+config({ path: path.join(__dirname, '.env.local') });
+
+// Also try loading from .env if .env.local doesn't exist
+if (!process.env.DATABASE_URL) {
+  config();
+}
+
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not set in environment variables!');
+  console.error('Make sure you have .env.local file with DATABASE_URL configured.');
+  process.exit(1);
+}
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -11,18 +23,9 @@ export const AppDataSource = new DataSource({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
   synchronize: false, // Never auto-sync when using migrations
   logging: true,
-  entities: ['entities/**/*.ts'],
-  migrations: ['migrations/**/*.ts'],
+  entities: [path.join(__dirname, 'entities/**/*.{ts,js}')],
+  migrations: [path.join(__dirname, 'migrations/**/*.{ts,js}')],
   subscribers: [],
 });
-
-// Initialize data source for CLI usage
-AppDataSource.initialize()
-  .then(() => {
-    console.log('Data Source has been initialized for migrations!');
-  })
-  .catch((err) => {
-    console.error('Error during Data Source initialization:', err);
-  });
 
 export default AppDataSource;

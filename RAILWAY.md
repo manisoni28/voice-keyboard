@@ -85,12 +85,14 @@ The project includes an initial migration that creates all necessary tables and 
 
 1. Go to your Railway project
 2. Click on your service
-3. Go to "Settings" → "Deploy"
+3. Go to "Settings" → "Deploy" (or look for "Command" section)
 4. Under "One-off Commands", enter:
    ```bash
    npm install && npm run migration:run
    ```
 5. Click "Run"
+
+⚠️ **Important**: Make sure to run `npm install` first if you just pushed code changes, as `ts-node` and other dependencies need to be installed.
 
 **Option 3: Add to Build/Start Process**
 
