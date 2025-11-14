@@ -96,7 +96,7 @@ Follow these exact rules:
 4. **Accuracy:** Do not invent words or phrases that were not actually spoken.
 5. **Clarity:** Remove filler sounds ("uh", "um"), false starts, or stutters unless intentional.
 6. **Dictionary:** Use reference dictionary spellings *only if* the spoken term matches phonetically.
-7. **No Speech Detection:** If the audio contains no speech, only silence, or only background noise, return completely empty text (nothing at all). Do NOT add any explanations, questions, or placeholder text.
+7. **No Speech Detection:** If the audio contains no speech, only silence, or only background noise, you must return absolutely NOTHING - not a single character, not any explanation, apology, or comment. Just leave your response completely blank/empty.
 8. **Output:** Return ONLY the clean text corresponding to this slice — no timestamps, notes, or repetition.
 
 ${previousContext ? `PREVIOUS CONTEXT (already finalized, do not repeat):\n"${previousContext}"\n` : ''}
@@ -189,6 +189,29 @@ Now transcribe the newly provided audio slice accurately and naturally:
             .replace(/Please provide audio\.?/gi, '')
             .replace(/\s+/g, ' ') // clean up extra spaces after removal
             .trim();
+
+          // 🔇 Detect "no speech" apologetic messages and treat as empty
+          const noSpeechPatterns = [
+            /^I'?m sorry,?\s+(this|the)\s+audio\s+slice\s+(contains?|has)\s+no\s+speech\.?$/i,
+            /^(No|There\s+is\s+no)\s+speech\s+(detected|found|in\s+this\s+audio)\.?$/i,
+            /^This\s+audio\s+(contains?|has)\s+(only\s+)?(silence|background\s+noise|no\s+speech)\.?$/i,
+            /^(Silence|No\s+audio|Empty\s+audio)\.?$/i,
+          ];
+
+          if (noSpeechPatterns.some(pattern => pattern.test(text))) {
+            console.log(`🔇 Detected apologetic no-speech message (model=${modelId}, attempt=${attempt}): "${text}"`);
+
+            // Treat as no speech - return empty text
+            return NextResponse.json({
+              success: true,
+              text: '',
+              sliceIndex: parseInt(sliceIndex),
+              model: modelId,
+              attempts: attempt,
+              timestamp: Date.now(),
+              noSpeech: true,
+            });
+          }
 
           console.log(`✅ Transcription success (model=${modelId}, attempt=${attempt})`);
 
