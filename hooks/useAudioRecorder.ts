@@ -127,6 +127,20 @@ export function useAudioRecorder(
     try {
       setError(null);
 
+      // Check for microphone permission first
+      try {
+        const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        if (permissionStatus.state === 'denied') {
+          throw new DOMException(
+            'Microphone access was denied. Please enable it in your browser settings.',
+            'NotAllowedError'
+          );
+        }
+      } catch (permCheckError) {
+        // Permission API might not be supported in all browsers, continue with getUserMedia
+        console.log('Permission API not supported, proceeding with getUserMedia');
+      }
+
       // Request microphone permission
       const constraintOptions: MediaTrackConstraints = {
         echoCancellation: true,

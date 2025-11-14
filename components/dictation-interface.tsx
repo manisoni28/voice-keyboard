@@ -268,9 +268,13 @@ export function DictationInterface() {
                 size="lg"
                 onClick={handleStart}
                 className="h-16 w-16 rounded-full"
-                disabled={isTranscribing}
+                disabled={isTranscribing || isAutoSaving}
               >
-                <Mic className="h-6 w-6" />
+                {isTranscribing || isAutoSaving ? (
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                ) : (
+                  <Mic className="h-6 w-6" />
+                )}
               </Button>
             ) : (
               <>
@@ -279,6 +283,7 @@ export function DictationInterface() {
                   variant="outline"
                   onClick={handlePauseResume}
                   className="h-14 w-14 rounded-full"
+                  disabled={isAutoSaving}
                 >
                   {isPaused ? (
                     <Play className="h-5 w-5" />
@@ -291,15 +296,20 @@ export function DictationInterface() {
                   variant="destructive"
                   onClick={handleStop}
                   className="h-16 w-16 rounded-full"
+                  disabled={isAutoSaving}
                 >
-                  <Square className="h-6 w-6" />
+                  {isAutoSaving ? (
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  ) : (
+                    <Square className="h-6 w-6" />
+                  )}
                 </Button>
               </>
             )}
           </div>
 
           {/* Status Messages */}
-          {!isRecording && audioSlices.length === 0 && !transcribedText && (
+          {!isRecording && audioSlices.length === 0 && !transcribedText && !isTranscribing && !isAutoSaving && (
             <div className="text-center text-sm text-muted-foreground">
               Click the microphone button to start recording
             </div>
