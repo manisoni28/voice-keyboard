@@ -47,7 +47,10 @@ export function AudioDeviceSelector() {
 
       // Request permission if we do not have any labels yet.
       if (!hasPermission) {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Request stream just for permission, then immediately release it
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Stop all tracks to release the microphone immediately
+        stream.getTracks().forEach((track) => track.stop());
       }
 
       const mediaDevices = await navigator.mediaDevices.enumerateDevices();

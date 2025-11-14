@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 export interface AudioSlice {
   blob: Blob;
@@ -325,6 +325,43 @@ export function useAudioRecorder(
       }, sliceIntervalMs);
     }
   }, [isRecording, isPaused, sliceIntervalMs, createAudioSlice, finalizeSlice]);
+
+  // Cleanup effect: Stop recording and release microphone when component unmounts
+  useEffect(() => {
+    return () => {
+      console.log('🧹 Cleaning up audio recorder on unmount...');
+
+      // Clear all timers
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+
+      if (sliceTimerRef.current) {
+        clearInterval(sliceTimerRef.current);
+        sliceTimerRef.current = null;
+      }
+
+      // Stop MediaRecorder if active
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (e) {
+          console.warn('Failed to stop MediaRecorder on cleanup:', e);
+        }
+        mediaRecorderRef.current = null;
+      }
+
+      // Release microphone stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => {
+          track.stop();
+          console.log('🎤 Microphone track stopped on cleanup');
+        });
+        streamRef.current = null;
+      }
+    };
+  }, []);
 
   return {
     isRecording,
