@@ -94,9 +94,10 @@ Follow these exact rules:
    then continue naturally without duplication or abrupt phrasing.
 3. **Formatting:** Apply correct grammar, punctuation, and capitalization naturally.
 4. **Accuracy:** Do not invent words or phrases that were not actually spoken.
-5. **Clarity:** Remove filler sounds (“uh”, “um”), false starts, or stutters unless intentional.
+5. **Clarity:** Remove filler sounds ("uh", "um"), false starts, or stutters unless intentional.
 6. **Dictionary:** Use reference dictionary spellings *only if* the spoken term matches phonetically.
-7. **Output:** Return ONLY the clean text corresponding to this slice — no timestamps, notes, or repetition.
+7. **No Speech Detection:** If the audio contains no speech, only silence, or only background noise, return completely empty text (nothing at all). Do NOT add any explanations, questions, or placeholder text.
+8. **Output:** Return ONLY the clean text corresponding to this slice — no timestamps, notes, or repetition.
 
 ${previousContext ? `PREVIOUS CONTEXT (already finalized, do not repeat):\n"${previousContext}"\n` : ''}
 
@@ -157,12 +158,21 @@ Now transcribe the newly provided audio slice accurately and naturally:
             text = partsArray.map((p: any) => p.text || '').join(' ').trim();
           }
 
+          // 🔇 Handle empty response (no speech detected)
           if (!text) {
-            console.warn(
-              `⚠️ Empty transcription (model=${modelId}, attempt=${attempt})`,
-              JSON.stringify(res, null, 2).slice(0, 600)
-            );
-            throw new Error(`Empty transcription (model=${modelId}, attempt=${attempt})`);
+            console.log(`🔇 No speech detected (model=${modelId}, attempt=${attempt})`);
+
+            // Return success with empty text - don't retry with other models
+            // This is not an error, Gemini correctly identified no speech
+            return NextResponse.json({
+              success: true,
+              text: '',
+              sliceIndex: parseInt(sliceIndex),
+              model: modelId,
+              attempts: attempt,
+              timestamp: Date.now(),
+              noSpeech: true,
+            });
           }
 
           // 🧼 Clean up artifacts
