@@ -20,8 +20,8 @@ const MODEL_CANDIDATES = [PRIMARY_GEMINI_MODEL, ...DEFAULT_FALLBACKS];
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 500;
 
-// Post-processing validation model (use faster model for validation)
-const VALIDATION_MODEL = 'gemini-2.5-flash-lite';
+// Post-processing validation model - using OpenAI for better accuracy
+const OPENAI_VALIDATION_MODEL = 'gpt-4o-mini'; // Fast, accurate, cost-effective
 
 // Dictionary cache to avoid repeated DB queries during a recording session
 interface DictionaryCacheEntry {
@@ -231,10 +231,10 @@ async function transcribeWithOpenAI(
 }
 
 /**
- * AI-powered post-processing to validate and clean transcription output
+ * OpenAI-powered post-processing to validate and clean transcription output
+ * Uses GPT-4o-mini for fast, accurate duplicate detection and text cleaning
  */
-async function validateTranscriptionWithAI(
-  genAI: GoogleGenerativeAI,
+async function validateTranscriptionWithOpenAI(
   transcribedText: string,
   previousContext: string | null
 ): Promise<string> {
@@ -247,71 +247,68 @@ async function validateTranscriptionWithAI(
     return transcribedText;
   }
 
-  try {
-    const validationPrompt = `You are a transcription quality control system.
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.log('⏭️ Skipping OpenAI validation - no API key');
+    return transcribedText;
+  }
 
-PREVIOUS TRANSCRIPT (already finalized):
+  try {
+    const openai = new OpenAI({ apiKey });
+
+    console.log(`🔍 Running OpenAI (${OPENAI_VALIDATION_MODEL}) validation for duplicate detection...`);
+
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_VALIDATION_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: `You are a transcription quality control system. Your job is to detect and remove duplicate content between consecutive audio transcription slices.
+
+Rules:
+1. Compare the NEW TRANSCRIPTION against the PREVIOUS TRANSCRIPT
+2. Remove any duplicate or overlapping content from the NEW TRANSCRIPTION
+3. Keep only genuinely new spoken words
+4. Maintain original capitalization and punctuation
+5. Do NOT add, modify, or interpret - only remove duplicates
+6. If the NEW TRANSCRIPTION is entirely duplicate, return exactly: [DUPLICATE]
+7. Otherwise, return ONLY the cleaned new content, no explanations`
+        },
+        {
+          role: 'user',
+          content: `PREVIOUS TRANSCRIPT (already finalized):
 "${previousContext}"
 
 NEW TRANSCRIPTION (current audio slice):
 "${transcribedText}"
 
-Your task:
-1. Determine if the NEW TRANSCRIPTION contains any duplicate content from the PREVIOUS TRANSCRIPT
-2. If yes, remove ONLY the duplicate parts and return the clean, new content
-3. If no duplicates, return the NEW TRANSCRIPTION as-is
-4. If the NEW TRANSCRIPTION is entirely a duplicate, return: [DUPLICATE]
-
-Rules:
-- Remove any text that repeats or paraphrases the previous transcript
-- Keep only the genuinely new spoken content
-- Maintain the original capitalization and punctuation of new content
-- Do NOT add, modify, or interpret - only remove duplicates
-- Return ONLY the cleaned text, no explanations or formatting
-
-Output the cleaned transcription now:`.trim();
-
-    const model = genAI.getGenerativeModel({
-      model: VALIDATION_MODEL,
-      generationConfig: {
-        temperature: 0.0, // Very deterministic for validation
-        topP: 0.9,
-        maxOutputTokens: 512,
-      },
+Output the cleaned transcription (new content only):`
+        }
+      ],
+      temperature: 0.0, // Maximum determinism
+      max_tokens: 500,
+      response_format: { type: 'text' }
     });
 
-    console.log(`🔍 Running AI validation for duplicate detection...`);
-
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: validationPrompt }] }],
-    });
-
-    const response = result.response;
-    let validatedText = '';
-
-    if (typeof response.text === 'function') {
-      validatedText = response.text().trim();
-    } else if (response?.candidates?.length) {
-      const partsArray = response.candidates[0]?.content?.parts || [];
-      validatedText = partsArray.map((p: any) => p.text || '').join(' ').trim();
-    }
+    let validatedText = completion.choices[0]?.message?.content?.trim() || '';
 
     // Check if it's marked as duplicate
     if (validatedText === '[DUPLICATE]' || validatedText.toLowerCase().includes('[duplicate]')) {
-      console.log(`✅ AI detected complete duplicate - returning empty`);
+      console.log(`✅ OpenAI detected complete duplicate - returning empty`);
       return '';
     }
 
-    // Additional cleaning
+    // Additional cleaning - remove any prefixes the model might add
     validatedText = validatedText
-      .replace(/^(Output|Result|Cleaned transcription)[:\-]?\s*/i, '')
+      .replace(/^(Output|Result|Cleaned transcription|Here is the cleaned transcription)[:\-]?\s*/i, '')
+      .replace(/^["'](.*)["']$/,'$1') // Remove surrounding quotes if any
       .trim();
 
-    console.log(`✅ AI validation complete: "${transcribedText}" → "${validatedText}"`);
+    console.log(`✅ OpenAI validation complete: "${transcribedText}" → "${validatedText}"`);
 
     return validatedText;
-  } catch (error) {
-    console.warn(`⚠️ AI validation failed, using original:`, error);
+  } catch (error: any) {
+    console.warn(`⚠️ OpenAI validation failed:`, error.message);
     // If validation fails, return original (safer than blocking)
     return transcribedText;
   }
@@ -426,6 +423,29 @@ export async function POST(request: NextRequest) {
               timestamp: Date.now(),
               duplicate: true,
             });
+          }
+
+          // 🔍 STEP 3: OpenAI-powered validation for additional accuracy
+          if (text.split(/\s+/).length > 3) {
+            try {
+              text = await validateTranscriptionWithOpenAI(text, previousContext);
+
+              if (!text) {
+                console.log(`🔇 OpenAI validation detected complete duplicate - returning empty`);
+                return NextResponse.json({
+                  success: true,
+                  text: '',
+                  sliceIndex: parseInt(sliceIndex),
+                  model: transcriptionResult.model,
+                  engine: 'whisper',
+                  timestamp: Date.now(),
+                  duplicate: true,
+                });
+              }
+            } catch (validationError: any) {
+              console.warn(`⚠️ OpenAI validation failed:`, validationError.message);
+              // Continue with heuristic-cleaned text
+            }
           }
         }
 
@@ -633,13 +653,13 @@ Now transcribe the newly provided audio slice accurately (NEW content only):
             }
           }
 
-          // 🔍 STEP 3: AI-powered validation (only if there's previous context and text is substantial)
+          // 🔍 STEP 3: OpenAI-powered validation (only if there's previous context and text is substantial)
           if (previousContext && cleanedText.split(/\s+/).length > 3) {
             try {
-              cleanedText = await validateTranscriptionWithAI(genAI, cleanedText, previousContext);
+              cleanedText = await validateTranscriptionWithOpenAI(cleanedText, previousContext);
 
               if (!cleanedText) {
-                console.log(`🔇 AI validation detected complete duplicate - returning empty`);
+                console.log(`🔇 OpenAI validation detected complete duplicate - returning empty`);
                 return NextResponse.json({
                   success: true,
                   text: '',
@@ -651,7 +671,7 @@ Now transcribe the newly provided audio slice accurately (NEW content only):
                 });
               }
             } catch (validationError) {
-              console.warn(`⚠️ AI validation failed:`, validationError);
+              console.warn(`⚠️ OpenAI validation failed:`, validationError);
               // Continue with heuristic-cleaned text
             }
           }
