@@ -157,9 +157,18 @@ async function transcribeWithGroq(
     const groq = new Groq({ apiKey });
 
     console.log(`🎙️ Attempting transcription with Groq Whisper (${GROQ_WHISPER_MODEL})...`);
+    console.log(`🔍 File info: name=${audioFile.name}, size=${audioFile.size}, type=${audioFile.type}`);
+
+    // Convert File to proper format for server-side SDKs
+    // The file is already in the correct format from FormData, but we need to ensure it has the right properties
+    const fileToSend = new File(
+      [await audioFile.arrayBuffer()],
+      audioFile.name.endsWith('.webm') ? audioFile.name : `audio-${Date.now()}.webm`,
+      { type: 'audio/webm' }
+    );
 
     const transcription = await groq.audio.transcriptions.create({
-      file: audioFile,
+      file: fileToSend,
       model: GROQ_WHISPER_MODEL,
       prompt: prompt || undefined,
       response_format: 'json',
@@ -175,7 +184,8 @@ async function transcribeWithGroq(
       model: GROQ_WHISPER_MODEL,
     };
   } catch (error: any) {
-    console.warn(`⚠️ Groq Whisper failed:`, error.message);
+    console.error(`❌ Groq Whisper failed:`, error);
+    console.error(`Error stack:`, error.stack);
     return null;
   }
 }
@@ -349,12 +359,20 @@ export async function POST(request: NextRequest) {
 
     // 🎯 PRIMARY: Try Whisper models first (much more accurate for speech-to-text)
     if (USE_WHISPER_PRIMARY) {
+      console.log(`🚀 Starting Whisper transcription for slice ${sliceIndex}`);
+      console.log(`📊 Audio file: size=${audioFile.size} bytes, type=${audioFile.type}`);
+
       // Try Groq Whisper first (fastest)
       transcriptionResult = await transcribeWithGroq(audioFile, whisperPrompt);
 
       // Fallback to OpenAI Whisper if Groq fails
       if (!transcriptionResult) {
+        console.log(`⚠️ Groq failed, trying OpenAI Whisper...`);
         transcriptionResult = await transcribeWithOpenAI(audioFile, whisperPrompt);
+      }
+
+      if (!transcriptionResult) {
+        console.error(`❌ Both Whisper services failed! Falling back to Gemini.`);
       }
 
       // If Whisper succeeded, process and return
