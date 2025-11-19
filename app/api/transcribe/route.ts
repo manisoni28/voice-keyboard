@@ -3,12 +3,22 @@ import { auth } from '@/lib/auth';
 import { getRepository } from '@/lib/data-source';
 import { Dictionary } from '@/entities/Dictionary';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import OpenAI from 'openai';
+import Groq from 'groq-sdk';
 
+// Transcription engine priority
+const USE_WHISPER_PRIMARY = true; // Set to false to use Gemini as primary
+
+// Whisper configuration
+const GROQ_WHISPER_MODEL = 'whisper-large-v3-turbo'; // Fastest Whisper model
+const OPENAI_WHISPER_MODEL = 'whisper-1';
+
+// Gemini fallback configuration
 const PRIMARY_GEMINI_MODEL = process.env.GEMINI_MODEL_ID || 'gemini-2.5-flash-lite';
 const DEFAULT_FALLBACKS = ['gemini-2.5-flash', 'gemini-2.5-pro'];
 const MODEL_CANDIDATES = [PRIMARY_GEMINI_MODEL, ...DEFAULT_FALLBACKS];
-const MAX_RETRIES = 3;
-const RETRY_BASE_DELAY_MS = 800;
+const MAX_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 500;
 
 // Post-processing validation model (use faster model for validation)
 const VALIDATION_MODEL = 'gemini-2.5-flash-lite';
@@ -109,6 +119,105 @@ function calculateSimilarity(str1: string, str2: string): number {
   const union = new Set([...words1, ...words2]);
 
   return intersection.size / union.size;
+}
+
+/**
+ * Build Whisper prompt with context and custom vocabulary
+ * Whisper uses the prompt to maintain consistent spelling and context across audio segments
+ */
+function buildWhisperPrompt(previousContext: string | null, dictionaryWords: Dictionary[]): string {
+  // Include more context (up to 400 chars) for better continuity
+  // This helps Whisper understand technical terms, proper nouns, and sentence structure
+  const contextPart = previousContext
+    ? `${previousContext.slice(-400)}...` // Last 400 chars with ellipsis to show continuation
+    : '';
+
+  // Include custom vocabulary to improve accuracy for specialized terms
+  const vocabularyPart = dictionaryWords.length > 0
+    ? ` Custom terms: ${dictionaryWords.slice(0, 30).map(w => w.word).join(', ')}.`
+    : '';
+
+  return `${contextPart}${vocabularyPart}`.trim();
+}
+
+/**
+ * Transcribe using Groq Whisper (fastest, most accurate)
+ */
+async function transcribeWithGroq(
+  audioFile: File,
+  prompt: string
+): Promise<{ text: string; model: string } | null> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    console.log('⏭️ Skipping Groq - no API key configured');
+    return null;
+  }
+
+  try {
+    const groq = new Groq({ apiKey });
+
+    console.log(`🎙️ Attempting transcription with Groq Whisper (${GROQ_WHISPER_MODEL})...`);
+
+    const transcription = await groq.audio.transcriptions.create({
+      file: audioFile,
+      model: GROQ_WHISPER_MODEL,
+      prompt: prompt || undefined,
+      response_format: 'json',
+      language: 'en',
+      temperature: 0.0, // Most deterministic for accuracy
+    });
+
+    const text = transcription.text.trim();
+    console.log(`✅ Groq Whisper success: "${text}"`);
+
+    return {
+      text,
+      model: GROQ_WHISPER_MODEL,
+    };
+  } catch (error: any) {
+    console.warn(`⚠️ Groq Whisper failed:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Transcribe using OpenAI Whisper (industry standard fallback)
+ */
+async function transcribeWithOpenAI(
+  audioFile: File,
+  prompt: string
+): Promise<{ text: string; model: string } | null> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.log('⏭️ Skipping OpenAI - no API key configured');
+    return null;
+  }
+
+  try {
+    const openai = new OpenAI({ apiKey });
+
+    console.log(`🎙️ Attempting transcription with OpenAI Whisper (${OPENAI_WHISPER_MODEL})...`);
+
+    const transcription = await openai.audio.transcriptions.create({
+      file: audioFile,
+      model: OPENAI_WHISPER_MODEL,
+      prompt: prompt || undefined,
+      response_format: 'json',
+      language: 'en',
+      temperature: 0.0,
+    });
+
+    const text = transcription.text.trim();
+    console.log(`✅ OpenAI Whisper success: "${text}"`);
+
+    return {
+      text,
+      model: OPENAI_WHISPER_MODEL,
+    };
+  } catch (error: any) {
+    console.warn(`⚠️ OpenAI Whisper failed:`, error.message);
+    return null;
+  }
 }
 
 /**
@@ -232,6 +341,92 @@ export async function POST(request: NextRequest) {
       dictionaryCache.set(userId, { words: dictionaryWords, timestamp: now });
       console.log(`📚 Fetched and cached dictionary for user ${userId} (${dictionaryWords.length} words)`);
     }
+    // Build Whisper prompt with context and vocabulary
+    const whisperPrompt = buildWhisperPrompt(previousContext, dictionaryWords);
+
+    let transcriptionResult: { text: string; model: string } | null = null;
+    let lastError: unknown = null;
+
+    // 🎯 PRIMARY: Try Whisper models first (much more accurate for speech-to-text)
+    if (USE_WHISPER_PRIMARY) {
+      // Try Groq Whisper first (fastest)
+      transcriptionResult = await transcribeWithGroq(audioFile, whisperPrompt);
+
+      // Fallback to OpenAI Whisper if Groq fails
+      if (!transcriptionResult) {
+        transcriptionResult = await transcribeWithOpenAI(audioFile, whisperPrompt);
+      }
+
+      // If Whisper succeeded, process and return
+      if (transcriptionResult) {
+        let text = transcriptionResult.text;
+
+        // Handle empty/silence
+        if (!text || text.toLowerCase().includes('silence') || text.toLowerCase().includes('no speech')) {
+          return NextResponse.json({
+            success: true,
+            text: '',
+            sliceIndex: parseInt(sliceIndex),
+            model: transcriptionResult.model,
+            engine: 'whisper',
+            timestamp: Date.now(),
+            noSpeech: true,
+          });
+        }
+
+        console.log(`📝 Raw Whisper transcription: "${text}"`);
+
+        // Apply deduplication
+        text = removeDuplicatesHeuristic(text, previousContext);
+
+        if (!text) {
+          console.log(`🔇 Heuristic detected complete duplicate - returning empty`);
+          return NextResponse.json({
+            success: true,
+            text: '',
+            sliceIndex: parseInt(sliceIndex),
+            model: transcriptionResult.model,
+            engine: 'whisper',
+            timestamp: Date.now(),
+            duplicate: true,
+          });
+        }
+
+        // Check similarity
+        if (previousContext) {
+          const similarity = calculateSimilarity(text, previousContext);
+          console.log(`📊 Similarity score: ${(similarity * 100).toFixed(1)}%`);
+
+          if (similarity > 0.90) {
+            console.log(`🚫 Very high similarity (${(similarity * 100).toFixed(1)}%) - likely duplicate`);
+            return NextResponse.json({
+              success: true,
+              text: '',
+              sliceIndex: parseInt(sliceIndex),
+              model: transcriptionResult.model,
+              engine: 'whisper',
+              timestamp: Date.now(),
+              duplicate: true,
+            });
+          }
+        }
+
+        console.log(`✨ Final cleaned text: "${text}"`);
+
+        return NextResponse.json({
+          success: true,
+          text,
+          sliceIndex: parseInt(sliceIndex),
+          model: transcriptionResult.model,
+          engine: 'whisper',
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    // 🔄 FALLBACK: Use Gemini if Whisper is disabled or failed
+    console.log('⚠️ Whisper unavailable, falling back to Gemini...');
+
     const dictionaryBlock = dictionaryWords.length
       ? `REFERENCE_DICTIONARY (for recognition and spelling support only):
 ${dictionaryWords
@@ -243,7 +438,7 @@ Do NOT add, infer, or force them if they were not spoken.
 `
       : '';
 
-    const basePrompt = `
+    const geminiPrompt = `
 You are a professional AI transcription system powering a real-time voice keyboard app.
 You receive audio in small slices. Each slice must be transcribed independently but flow naturally with the previous text.
 
@@ -282,8 +477,7 @@ ${previousContext ? `\n⚠️  REMINDER: Previous context "${previousContext}" i
 Now transcribe the newly provided audio slice accurately (NEW content only):
 `.trim();
 
-
-    // Convert audio to base64
+    // Convert audio to base64 for Gemini
     const arrayBuffer = await audioFile.arrayBuffer();
     const base64Audio = Buffer.from(arrayBuffer).toString('base64');
 
@@ -291,7 +485,6 @@ Now transcribe the newly provided audio slice accurately (NEW content only):
     if (!apiKey) throw new Error('GEMINI_API_KEY is not configured');
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    let lastError: unknown = null;
 
     // 🌀 Try each model with retries
     for (const modelId of MODEL_CANDIDATES) {
@@ -308,7 +501,7 @@ Now transcribe the newly provided audio slice accurately (NEW content only):
 
           // 👇 Explicitly tell Gemini to transcribe
           const parts = [
-            { text: basePrompt },
+            { text: geminiPrompt },
             {
               inlineData: {
                 mimeType: audioFile.type || 'audio/webm',

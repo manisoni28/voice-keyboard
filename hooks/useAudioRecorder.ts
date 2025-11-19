@@ -141,11 +141,14 @@ export function useAudioRecorder(
         console.log('Permission API not supported, proceeding with getUserMedia');
       }
 
-      // Request microphone permission
+      // Request microphone permission with high-quality audio settings
       const constraintOptions: MediaTrackConstraints = {
         echoCancellation: true,
         noiseSuppression: true,
-        sampleRate: 44100,
+        autoGainControl: true,
+        sampleRate: 48000, // CD-quality sample rate
+        sampleSize: 16,    // 16-bit audio
+        channelCount: 1,   // Mono is sufficient for speech
         ...audioConstraints,
       };
 

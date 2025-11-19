@@ -293,12 +293,17 @@ export function useTranscription(): UseTranscriptionReturn {
         formData.append("audio", audioFile);
         formData.append("sliceIndex", sliceIndex.toString());
 
-        // Add previous context for continuity (last 150 chars for better context)
-        // This helps Gemini maintain consistent spelling and phrasing across slices
+        // Add previous context for continuity (last 800 chars for better context)
+        // Whisper uses this to maintain consistent spelling, phrasing, and avoid duplicates
+        // Longer context (800 chars ≈ 120-150 words) helps with:
+        // - Technical terms and proper nouns
+        // - Sentence continuity across slice boundaries
+        // - Avoiding repetition
         if (processedTextRef.current.length > 0) {
-          const contextLength = Math.min(150, processedTextRef.current.length);
+          const contextLength = Math.min(800, processedTextRef.current.length);
           const previousContext = processedTextRef.current.slice(-contextLength);
           formData.append("previousContext", previousContext);
+          console.log(`📝 Sending ${contextLength} chars of context to Whisper`);
         }
 
         // Create abort controller for this request

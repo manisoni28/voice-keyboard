@@ -14,7 +14,7 @@ import { RECORDING_STATE_EVENT, TRANSCRIPTION_CREATED_EVENT, RecordingStatePaylo
 
 export function DictationInterface() {
   const { preferences } = useAudioPreferences();
-  const sliceIntervalMs = preferences.sliceIntervalMs ?? 5000;
+  const sliceIntervalMs = preferences.sliceIntervalMs ?? 8000; // 8 seconds for better context
   const selectedDeviceId = preferences.deviceId;
 
   // Get transcription hook first
